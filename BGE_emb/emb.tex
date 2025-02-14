@@ -1,0 +1,268 @@
+\section{Finetuning the BGE Model}
+\label{sec:finetuning_bge}
+
+In this section, we describe the data collection and preparation process, the chosen finetuning methods for the BGE model, and the testing procedures used to evaluate the finetuned model's performance.
+
+
+
+\subsection{Data Collection and Parsing}
+\label{subsec:data_collection}
+
+The preparation of high-quality datasets is a critical step in this work, as it underpins the effectiveness of the finetuning process for the BGE model. Two primary sources of data were utilized: ClinicalTrials.gov, which provides detailed information on clinical studies, and the Unified Medical Language System (UMLS), which offers a rich ontology of medical terms and relationships. The following details outline the methodologies applied to parse and structure these datasets.
+
+\subsubsection{Parsing ClinicalTrials.gov Data}
+\label{subsubsec:parsing_clinical_trials}
+
+The data from ClinicalTrials.gov was extracted from JSON files that encapsulate metadata and descriptive information about clinical trials. The parsing process involved a two-stage pipeline: initial structured data extraction followed by triplet generation for training.
+
+The first stage focused on systematic extraction of essential trial information. Each clinical trial entry contained multiple key components: a unique trial identifier (nctId), both brief and official titles describing the study, comprehensive summary descriptions, the medical conditions under investigation, associated keywords for categorization, detailed intervention information, and primary outcome measures. This rich set of information provided the foundation for understanding the relationships between different medical concepts within each trial.
+
+The raw data structure followed a hierarchical organization under a protocolSection, which was divided into specialized modules. The identificationModule housed trial identifiers and titles, while the descriptionModule contained detailed trial summaries. Medical conditions and keywords were stored in the conditionsModule, intervention details in the armsInterventionsModule, and outcome measures in the outcomesModule. This modular organization facilitated efficient data extraction and relationship mapping.
+
+Particular emphasis was placed on the processing of intervention descriptions. When available, both the intervention name and its detailed description were concatenated to preserve the complete context of the intervention's implementation. This approach ensured that the semantic relationship between an intervention and its practical application was maintained throughout the parsing process.
+
+The second stage of the pipeline transformed the structured data into training triplets, focusing on two primary relationship types. The first type paired medical conditions with their corresponding interventions, where each condition served as a query and its associated intervention as a positive example. The second type established connections between medical conditions and their related keywords, capturing the semantic relationships between conditions and relevant medical terminology.
+
+The resulting triplets were structured in a consistent format, with each entry containing a query field representing the medical condition, a positive example field containing the related term, an empty negative field (to be populated in later stages), and a category identifier specifying whether the relationship was intervention-based or keyword-based. This structure was designed to facilitate the subsequent training process while maintaining clear semantic relationships.
+
+Data quality was ensured through several preprocessing steps. All text underwent normalization to lowercase format, with special characters removed to maintain consistency. Whitespace was standardized throughout the dataset, eliminating extraneous spaces and normalizing line breaks. The preprocessing pipeline also included filtering steps to remove interventions marked as "OTHER" and any empty fields, ensuring that only meaningful relationships were preserved in the final dataset.
+
+The processed triplets were stored in JSONL format, with each line containing a single triplet. This format was selected for its efficiency in handling large-scale datasets and its compatibility with streaming data processing pipelines. The resulting dataset served as a cornerstone for training the BGE model, providing rich contextual information about the relationships between medical conditions and their associated interventions or keywords in clinical trials. Representative examples of the generated triplets include:
+
+\begin{itemize}
+    \item \{'query': 'rheumatoid arthritis', 'pos': ['larginine'], 'neg': [''], 'category': 'intervention'\}
+    \item \{'query': 'refractory multiple myeloma', 'pos': ['selinexor'], 'neg': [''], 'category': 'keyword'\}
+\end{itemize}
+
+\subsubsection{Parsing UMLS Data}
+\label{subsubsec:parsing_umls}
+
+The UMLS dataset was parsed to provide a deeper understanding of medical terminology and relationships through a multi-stage process focusing on two primary source files: MRCONSO and MRREL. The parsing pipeline was designed to extract meaningful semantic relationships while ensuring data quality and consistency throughout the process.
+
+The initial stage focused on the MRCONSO file, which contains concept descriptions and their various representations. A crucial preprocessing step involved filtering the data to retain only English-language terms, identified by the language code "ENG" in the source records. This language filtering ensured consistency in the semantic relationships and avoided potential confusion from cross-language term mappings.
+
+For each concept in UMLS, identified by a unique Concept Unique Identifier (CUI), the pipeline selected a single representative term based on a hierarchical selection criteria. The primary selection criterion prioritized terms marked as preferred terms (PT). When PT was not available, the system selected terms that were marked as preferred (P) and current (Y) in their respective fields, with additional preference given to terms from the Medical Subject Headings (MSH) vocabulary. This systematic approach ensured consistent concept representation throughout the dataset.
+
+The second stage of the pipeline processed the MRREL file, which contains relationship data between medical concepts. The relationships were categorized into several types, with particular focus on three key relationship categories: synonyms (SY), broader relationships (RB), and parent-child relationships (PAR). These categories were selected for their relevance in capturing different aspects of medical concept hierarchies and associations.
+
+The extracted relationships were transformed into training triplets following a consistent structure similar to that used for the ClinicalTrials.gov data. Each triplet contained a source concept as the query, its related concept as a positive example, and maintained the relationship type as a category identifier. The pipeline included specific data quality measures, including the removal of self-referential relationships where the source and target concepts were identical.
+
+Text normalization was applied to all terms, including conversion to lowercase, removal of special characters, and standardization of whitespace. This normalization process ensured consistency across the dataset and improved the quality of subsequent semantic matching operations. The process also included the removal of duplicate entries to prevent overrepresentation of certain relationships.
+
+The resulting triplets were structured as follows:
+
+\begin{itemize}
+    \item \{'query': 'Methylphenyltetrahydropyridine', 'pos': ['Neurotoxins'], 'neg': [], 'category': 'RB'\}
+    \item \{'query': '1,4-alpha-Glucan branching enzyme', 'pos': ['Glucosyltransferases'], 'neg': [], 'category': 'PAR'\}
+\end{itemize}
+
+These triplets effectively capture the semantic relationships encoded in the UMLS ontology, with each relationship type providing different perspectives on concept associations. The synonym relationships (SY) capture equivalent terms, broader relationships (RB) indicate more general concept associations, and parent-child relationships (PAR) represent hierarchical connections in the medical terminology structure. This rich set of relationships was later integrated with the ClinicalTrials.gov dataset to create a comprehensive training resource that combines both structured ontological knowledge and practical clinical trial contexts.
+
+\subsubsection{Integration and Final Dataset Preparation}
+The parsed data from ClinicalTrials.gov and UMLS was merged to create a unified dataset for finetuning the BGE model. The triplets generated from ClinicalTrials.gov provide contextual relationships within clinical studies, while the UMLS data enriches the dataset with semantic relationships between medical concepts. At this stage, the triplets only consist of queries and positive examples, with the negative examples deferred to the merging and finetuning phases.
+
+By combining these two sources, the resulting dataset ensures that the finetuned model captures both the specific context of clinical trials and the broader semantics of medical terminology.
+
+
+\subsubsection{Negative Selection Strategies}
+\label{subsubsec:negative_selection}
+
+The selection of appropriate negative examples represents a critical component in training contrastive learning models, particularly for specialized domains like medical terminology. The effectiveness of these models heavily depends on their ability to distinguish between relevant and irrelevant contexts, which is directly influenced by the quality and characteristics of the selected negative examples. Through our research, we explored and evaluated several negative selection strategies, each offering distinct advantages and challenges for medical term embedding.
+
+Random negative sampling represents the most straightforward approach, where negative examples are randomly selected from the available corpus. While computationally efficient, this method often produces overly simple contrasts that fail to challenge the model sufficiently. The stark differences between randomly selected terms may not encourage the model to learn the nuanced distinctions often required in medical terminology.
+
+Semi-hard negative mining offers a more sophisticated approach by selecting negative examples that are moderately difficult for the model to distinguish from positive examples. This strategy typically involves computing embeddings for potential negative candidates and selecting those that lie within a specific distance range from the query in the embedding space. While this approach can provide more informative training signals, it introduces significant computational overhead and may be sensitive to the quality of the initial embeddings.
+
+Our implementation adopted a hybrid approach that combines linguistic pattern matching with controlled randomization. The strategy focuses on selecting negative examples based on surface-level text similarities while maintaining semantic distinctness. The process involves three main components:
+
+The first component focuses on suffix-based selection, where negative examples are chosen based on shared suffix patterns of varying lengths (3-5 characters). This approach captures terms with similar morphological endings but different meanings, which is particularly relevant for medical terminology where suffix patterns often carry specific semantic implications.
+
+The second component implements prefix-based selection, examining shared initial character sequences (1-4 characters). This method identifies terms that begin similarly but diverge in meaning, helping the model learn to distinguish between terms that might appear related at first glance but represent different medical concepts.
+
+The final component supplements these pattern-based selections with random sampling to ensure diversity in the negative examples. This combination ensures that the model encounters both challenging cases (pattern-based selections) and clearly distinct cases (random selections), promoting robust learning across different types of term relationships.
+
+The implementation processes the data in parallel chunks for efficiency, with each chunk maintaining local dictionaries for suffix and prefix patterns. For each query-positive pair, the system selects two suffix-based negatives, two prefix-based negatives, and additional random negatives to reach a total of seven negative examples per entry. This number was chosen empirically to provide sufficient contrast while maintaining computational feasibility.
+
+To ensure quality and consistency, several filtering mechanisms were implemented:
+\begin{itemize}
+    \item Exclusion of self-referential matches where negative candidates match the positive example
+    \item Removal of exact suffix or prefix matches to avoid semantically similar terms
+    \item Deduplication of negative examples to ensure diversity within each training instance
+\end{itemize}
+
+This hybrid strategy proved effective for medical terminology, as it creates challenging but meaningful contrasts that help the model learn fine-grained distinctions between medical terms. The pattern-based selection captures morphological similarities that are common in medical terminology, while the random component ensures broad coverage of the semantic space. The approach balances computational efficiency with the need for informative negative examples, making it particularly suitable for large-scale medical term embedding tasks.
+
+\subsection{Finetuning Strategy}
+\label{subsec:finetuning_strategy}
+
+The finetuning of the BGE model was performed on a dataset comprising 6.4 million triplets, constructed from ClinicalTrials.gov and UMLS as described in the previous section. We selected the \texttt{BAAI/bge-large-en-v1.5} model as our foundation, leveraging its strong pre-trained understanding of general language patterns. The training process was implemented using distributed training across four NVIDIA A100 GPUs to handle the large-scale dataset efficiently while maintaining model quality.
+
+\subsubsection{Contrastive Loss Function}
+
+The finetuning process employed the \textbf{InfoNCE} (InfoMax Noise-Contrastive Estimation) loss function~\cite{oord2018representation}, which is widely used in contrastive learning to encourage the model to map similar text representations closer together while pushing apart dissimilar ones. Given a query embedding $\mathbf{q}$, a positive passage embedding $\mathbf{p^+}$, and a set of $N$ negative passage embeddings $\mathbf{p^-_i}$, the InfoNCE loss is defined as:
+
+\begin{equation}
+    \mathcal{L} = - \log \frac{\exp(\text{sim}(\mathbf{q}, \mathbf{p^+}) / \tau)}
+    {\exp(\text{sim}(\mathbf{q}, \mathbf{p^+}) / \tau) + \sum_{i=1}^{N} \exp(\text{sim}(\mathbf{q}, \mathbf{p^-_i}) / \tau)}
+\end{equation}
+
+where $\text{sim}(\mathbf{a}, \mathbf{b})$ denotes the cosine similarity between two embeddings, and $\tau$ is the temperature parameter that controls the sharpness of the similarity distribution. In our implementation, we set $\tau$ to 0.1, which was empirically determined to provide optimal separation between similar and dissimilar terms in the embedding space.
+
+\subsubsection{Training Infrastructure and Optimization}
+
+The training infrastructure was built using PyTorch's Distributed Data Parallel (DDP) framework, enabling efficient parallel processing across multiple GPUs. This distributed approach was crucial for handling our large dataset while maintaining reasonable training times. Mixed precision training (FP16) was employed to reduce memory usage and accelerate computation without significant loss in model quality.
+
+To manage memory constraints while maintaining effective training, we set the batch size to 8 per device, resulting in an effective batch size of 32 across all GPUs. The \texttt{train\_group\_size} parameter was also set to 8, optimizing the contrastive learning process by ensuring a balanced ratio between positive and negative examples within each training batch. Cross-device negative sampling was enabled to increase the diversity of negative examples seen by the model during training, effectively expanding the pool of negative examples without increasing memory requirements.
+
+The learning rate was carefully tuned to 1e-5, striking a balance between stable training and effective adaptation to the medical domain. This relatively conservative learning rate helped preserve the model's pre-trained knowledge while allowing sufficient adaptation to medical terminology. Sequence lengths for both queries and passages were capped at 128 tokens, which our analysis showed was sufficient to capture the vast majority of medical terms and their contexts while maintaining computational efficiency.
+
+A key aspect of our finetuning approach was the normalization of embeddings (\texttt{normalized=True}), which ensures consistent scaling of the embedding vectors. This normalization is particularly important for medical terminology, where term similarities need to be compared reliably across different concept categories and relationship types.
+
+The training ran for three epochs, with the model's performance monitored through validation metrics. We implemented a conservative checkpoint strategy, saving model states at regular intervals to maintain safety against potential training interruptions. The training pipeline was designed to be robust to data loading irregularities, with \texttt{dataloader\_drop\_last} set to True to ensure consistent batch sizes throughout training, helping maintain stable gradients and avoid potential instabilities from partially filled batches.
+
+\subsection{Testing and Evaluation}
+\label{subsec:testing_evaluation}
+
+The evaluation of the finetuned BGE model was conducted using three distinct datasets, each designed to assess different aspects of its performance in encoding and retrieving clinically relevant text. These datasets provide a comprehensive evaluation framework by leveraging both internal validation splits and external sources of medical term relationships.
+
+\subsubsection{Evaluation Datasets}
+
+The first evaluation dataset was constructed by reserving a subset of positive pairs from the original training dataset prior to training. This classical evaluation set ensures a fair assessment of the model's ability to generalize beyond its training data while maintaining consistency in the type of medical trial-related information it has been exposed to. Since these pairs were held out before finetuning, they serve as an in-domain validation set.
+
+The second evaluation dataset was derived from the Unified Medical Language System (UMLS) dictionary. Specifically, it was built by selecting term pairs that share a \texttt{synonymous} relationship in the UMLS ontology. This dataset provides an external validation source that is distinct from the training data and evaluates the model's ability to capture medically meaningful equivalences across standardized terminologies.
+
+The third evaluation dataset was obtained from an independent dataset developed by the CELEHS laboratory. This dataset consists of medically validated positive term pairs curated by domain experts. The inclusion of this dataset allows for an additional level of external validation by testing the model on a manually verified set of clinical term associations, ensuring robustness beyond the structured datasets used in training.
+
+\subsubsection{Evaluation Procedure}
+
+The evaluation process began with the creation of comprehensive test datasets from the positive pairs described in the previous section. For each evaluation dataset, we implemented a systematic approach to generate balanced test sets suitable for similarity assessment. The positive pairs were first processed to ensure data quality by removing any entries with missing or malformed values. To create a meaningful retrieval-based evaluation setting, we then augmented these datasets with carefully selected negative examples.
+
+For the UMLS synonym pairs, we developed a controlled negative sampling strategy where negative examples were selected from within the same semantic category to ensure challenging and meaningful contrasts. This approach maintains the difficulty of the task while avoiding trivial discriminations. The sampling process was implemented with careful consideration of data distribution, limiting each test set to a manageable size (20,000 pairs for UMLS synonym pairs and 400,000 pairs for unseen training triplets) while ensuring statistical significance.
+
+The test datasets were stored in CSV format with a consistent structure containing paired descriptions ('desc1' and 'desc2' fields). Data quality was maintained through comprehensive preprocessing steps. The text representation was standardized by removing dots and special characters, while maintaining semantic integrity. All entries underwent verification to ensure string-type consistency, preventing potential processing errors. To avoid statistical bias, we implemented deduplication procedures to prevent overrepresentation of certain pairs. Furthermore, we employed balanced sampling techniques to ensure equal representation of positive and negative pairs, creating a robust foundation for evaluation.
+
+The evaluation procedure was designed to provide a comprehensive assessment of the model's performance through both threshold-independent and threshold-dependent metrics. This dual approach ensures robust comparison between models while also providing practical insights into model behavior at specific operating points.
+
+The evaluation pipeline processes the datasets in batches to maintain memory efficiency, with a batch size of 32 pairs per iteration. Each text pair undergoes tokenization with a maximum sequence length of 512 tokens, and the embeddings are computed using GPU acceleration. The model's CLS token embedding is extracted from the last hidden state and used for similarity computation.
+
+For computing similarities between pairs, we implement efficient matrix operations using PyTorch. The cosine similarity between embeddings is calculated using the dot product of normalized vectors:
+
+\begin{equation}
+similarity = \frac{\mathbf{a} \cdot \mathbf{b}}{||\mathbf{a}|| \cdot ||\mathbf{b}||}
+\end{equation}
+
+where $\mathbf{a}$ and $\mathbf{b}$ are the embeddings of the paired texts.
+
+The primary evaluation metrics are threshold-independent, chosen for their robustness to similarity score distribution shifts that often occur during fine-tuning:
+
+\begin{itemize}
+    \item Area Under the ROC Curve (AUC-ROC): Measures the model's ability to distinguish between positive and negative pairs across all possible thresholds
+    \item Precision-Recall AUC (PR-AUC): Computed using trapezoidal integration of the precision-recall curve, particularly informative for imbalanced datasets
+    \item Average Precision (AP): A weighted mean of precision across all recall levels, providing a single score that captures the precision-recall trade-off
+\end{itemize}
+
+For threshold-dependent metrics, we determine an optimal threshold using Youden's J statistic, which maximizes the difference between the true positive rate (TPR) and false positive rate (FPR):
+
+\begin{equation}
+J = \max_{\theta}(TPR(\theta) - FPR(\theta))
+\end{equation}
+
+At this optimal threshold, we compute:
+\begin{itemize}
+    \item F1-Score: The harmonic mean of precision and recall
+    \item Precision: The ratio of true positives to all positive predictions
+    \item Recall: The ratio of true positives to all actual positive pairs
+\end{itemize}
+
+This comprehensive evaluation framework, combining multiple metrics and datasets, provides a robust foundation for assessing model performance and enables meaningful comparisons between different model versions, as detailed in the following results section.
+
+\subsubsection{Evaluation Results}
+\label{subsubsec:evaluation_results}
+
+The performance of the finetuned BGE model was first evaluated on two datasets: (1) the reserved unseen triplets from the training set and (2) the UMLS synonym dictionary dataset. The results, presented in Table~\ref{tab:auc_results}, demonstrate consistent improvements across all evaluation metrics after finetuning.
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{|l|c|c|c|c|}
+        \hline
+        \multicolumn{5}{|c|}{\textbf{UMLS Synonym Dictionary (20,000 pairs)}} \\
+        \hline
+        \textbf{Model} & \textbf{AUC-ROC} & \textbf{PR-AUC} & \textbf{AP} & \textbf{F1-score} \\
+        \hline
+        BGE large & 0.9403 & 0.4581 & 0.9581 & 0.8900 \\
+        BGE fine-tuned & \textcolor{green}{0.9875} & \textcolor{green}{0.4896} & \textcolor{green}{0.9896} & \textcolor{green}{0.9474} \\
+        \hline
+        \multicolumn{5}{|c|}{\textbf{Unseen Training Triplets (400,000 pairs)}} \\
+        \hline
+        BGE large & 0.8860 & 0.4066 & 0.9066 & 0.7911 \\
+        BGE fine-tuned & \textcolor{green}{0.9763} & \textcolor{green}{0.4788} & \textcolor{green}{0.9788} & \textcolor{green}{0.9208} \\
+        \hline
+    \end{tabular}
+    \caption{Comprehensive comparison of BGE models showing improvements across all metrics. The fine-tuned model demonstrates superior performance in both threshold-independent metrics (AUC-ROC, PR-AUC, AP) and threshold-dependent metrics (F1-score).}
+    \label{tab:auc_results}
+\end{table}
+
+The results show substantial improvements across all metrics. For the UMLS Synonym Dictionary, the fine-tuned model achieved a 5\% improvement in AUC-ROC (0.9875 vs 0.9403), along with notable gains in PR-AUC and Average Precision. The F1-score improvement of nearly 6 percentage points (0.9474 vs 0.8900) indicates better balanced performance between precision and recall at the optimal threshold. Similarly, for the Unseen Training Triplets, we observe a significant 9\% improvement in AUC-ROC (0.9763 vs 0.8860), with corresponding improvements in other metrics. The consistent enhancement across both threshold-independent and threshold-dependent metrics suggests that the fine-tuning process has successfully improved the model's ability to distinguish between related and unrelated medical terms.
+
+While these results are promising, the exceptionally high performance metrics, particularly the AUC-ROC of 0.988 on the UMLS synonym dataset, warrant careful consideration regarding potential overfitting. Although these datasets were not directly used in training, they share structural similarities with the training data in how query-positive pairs are formed. This suggests that while the model has successfully learned to generalize within this specific distribution, it may face challenges when applied to more diverse or less structured data.
+
+To assess the model's robustness in a more realistic setting, we evaluated it on an independent dataset curated by the CELEHS laboratory. The results are presented in Tables~\ref{tab:celehs_results} and~\ref{tab:celehs_nodx_results}.
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{|l|c|c|c|c|}
+        \hline
+        \multicolumn{5}{|c|}{\textbf{CELEHS Known Pairs}} \\
+        \hline
+        \textbf{Model} & \textbf{AUC-ROC} & \textbf{PR-AUC} & \textbf{AP} & \textbf{F1} \\
+        \hline
+        BGE large & 0.8174 & 0.3367 & 0.8367 & 0.7214 \\
+        BGE fine-tuned & \textcolor{green}{0.8545} & \textcolor{green}{0.3725} & \textcolor{green}{0.8725} & \textcolor{green}{0.7626} \\
+        \hline
+    \end{tabular}
+    \caption{Performance comparison on CELEHS Known Pairs showing moderate improvements across all metrics, indicating successful generalization to expert-curated data.}
+    \label{tab:celehs_results}
+\end{table}
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{|l|c|c|c|c|}
+        \hline
+        \multicolumn{5}{|c|}{\textbf{CELEHS Known Pairs (Without Diagnosis-Diagnosis)}} \\
+        \hline
+        \textbf{Model} & \textbf{AUC-ROC} & \textbf{PR-AUC} & \textbf{AP} & \textbf{F1} \\
+        \hline
+        BGE large & 0.5344 & 0.0224 & 0.5225 & 0.5431 \\
+        BGE fine-tuned & \textcolor{green}{0.7251} & \textcolor{green}{0.2240} & \textcolor{green}{0.7241} & \textcolor{green}{0.6274} \\
+        \hline
+    \end{tabular}
+    \caption{Performance comparison on CELEHS dataset excluding diagnosis-diagnosis pairs, revealing stronger relative improvements and demonstrating the model's enhanced capability in handling technical medical terms.}
+    \label{tab:celehs_nodx_results}
+\end{table}
+
+The results on the CELEHS dataset provide a more nuanced view of the model's capabilities. On the complete CELEHS dataset, the fine-tuned model shows moderate improvements across all metrics, with a 3.7 percentage point increase in AUC-ROC (0.8545 vs 0.8174) and corresponding gains in PR-AUC, AP, and F1-score. However, the most striking results emerge when examining the performance on the subset excluding diagnosis-diagnosis pairs. Here, the fine-tuned model demonstrates a dramatic improvement of 19 percentage points in AUC-ROC (0.7251 vs 0.5344), with the PR-AUC increasing by an order of magnitude (0.2240 vs 0.0224). This substantial performance gap suggests that the fine-tuned model has developed a particularly strong capability in handling technical medical terms, rather than relying on the more straightforward text patterns present in diagnosis descriptions.
+
+These findings indicate that the model effectively captures medical terminology relationships, making it well-suited for keyword-based search tools where precise term associations are critical. The significant improvements on the more challenging technical terms subset demonstrate that the fine-tuning process has successfully enhanced the model's ability to understand and compare specialized medical terminology, even when dealing with less contextually rich text.
+
+\subsection{Challenges and Considerations}
+\label{subsec:challenges_fin}
+
+The finetuning process for the BGE model and the construction of the training dataset presented several challenges that required careful trade-offs and iterative refinement. One major challenge was the choice of positive pairs. Balancing between super strong connections—which the model might already capture effectively—and more distant or loosely connected pairs that are not always meaningful was critical. For instance, in the UMLS data, we had to carefully consider how to handle different relationship types (SY, RB, PAR) when creating positive pairs, as each type represents a different semantic strength. Overemphasis on very strong connections could lead to redundancy, whereas including overly distant pairs might introduce noise, thereby impairing the model's ability to learn subtle semantic nuances.
+
+Another significant challenge was the selection of negative examples. Negatives need to be challenging enough to force the model to learn fine-grained distinctions but not so difficult as to confuse the learning process. Our hybrid approach combining suffix-based (3-5 characters) and prefix-based (1-4 characters) pattern matching with random sampling required careful tuning. We experimented with various strategies such as complete random negatives, semi-hard negative mining, and semantically filtered random negatives, each offering a different balance between computational cost and informativeness. The final implementation of selecting two suffix-based, two prefix-based, and three random negatives per pair emerged after extensive experimentation with different ratios and selection methods.
+
+Memory management during training posed another significant challenge, particularly given the large scale of our dataset (6.4 million triplets). The implementation of mixed precision training (FP16) and careful batch size selection (8 per device across four A100 GPUs) was crucial for maintaining training stability while maximizing GPU utilization. The cross-device negative sampling strategy, while effective for increasing negative example diversity, required careful implementation to manage memory constraints and maintain consistent batch sizes.
+
+Effective text cleaning was also vital. The heterogeneous nature of clinical trial descriptions and UMLS entries necessitated robust preprocessing—such as lowercasing, removal of extraneous punctuation, and normalization of clinical terms—to mitigate noise and inconsistencies in the raw data. Particular attention was required when handling the ClinicalTrials.gov data, where intervention descriptions needed to be carefully concatenated with their names while preserving semantic meaning. This standardization ensures that the model focuses on the core semantic content of the text.
+
+The evaluation process presented its own set of challenges, particularly in creating balanced and meaningful test sets. The dramatic performance difference observed in the CELEHS dataset when excluding diagnosis-diagnosis pairs (AUC-ROC improvement of 19 percentage points) highlighted the importance of careful dataset curation and the need to consider different types of medical relationships separately. This observation led to more nuanced evaluation strategies and a better understanding of the model's strengths and limitations across different types of medical terminology.
+
+Additional important considerations included ensuring consistency in tokenization across diverse data sources, determining the optimal pooling method to aggregate token-level embeddings, and setting appropriate truncation strategies. For instance, truncating longer passages from the end was chosen based on observations of unfound articles, as this approach generally preserves the most relevant introductory content without sacrificing critical information. The sequence length cap of 128 tokens for training and 512 for evaluation required careful consideration to balance between computational efficiency and information preservation.
+
+The temperature parameter ($\tau = 0.1$) in the InfoNCE loss function required careful tuning to achieve optimal separation between similar and dissimilar terms in the embedding space. This parameter significantly influenced the model's ability to learn fine-grained distinctions between medical terms while maintaining reasonable similarity scores for related concepts.
+
+Lastly, integrating heterogeneous data sources from ClinicalTrials.gov and UMLS required careful merging strategies to maintain the integrity of the triplet formation. The different nature of relationships in each source—interventions and keywords from clinical trials versus synonyms and hierarchical relationships from UMLS—required thoughtful consideration in how they were combined and weighted in the training process. Balancing these factors—positive pair selection, negative sampling, text cleaning, tokenization consistency, pooling, and truncation—was essential for developing a robust finetuning pipeline capable of capturing complex biomedical semantics.
+
+\newpage
+
+
